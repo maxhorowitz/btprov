@@ -3,17 +3,17 @@ package provisioningmanager
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	nm "github.com/Wifx/gonetworkmanager"
 	"github.com/edaniels/golog"
+	"github.com/godbus/dbus/v5"
 	"github.com/pkg/errors"
 	"go.viam.com/utils"
 )
 
 type ProvisioningManager interface {
-	ConnectToWiFi(ssid, psk string) error
+	ConnectToWiFi(ctx context.Context, logger golog.Logger, ssid, psk string) error
 }
 
 type linuxProvisioningManager struct {
@@ -29,16 +29,21 @@ func NewProvisioningManager(ctx context.Context, logger golog.Logger) (*linuxPro
 	if err := networkManager.SetPropertyWirelessEnabled(true); err != nil {
 		return nil, errors.WithMessage(err, "failed to set property wireless enabled")
 	}
+	count := 0
 	for {
 		if !utils.SelectContextOrWait(ctx, time.Second) {
 			return nil, ctx.Err()
 		}
+		count++
 		enabled, err := networkManager.GetPropertyWirelessEnabled()
 		if err != nil {
 			return nil, errors.WithMessage(err, "failed to get property wireless enabled")
 		}
 		if enabled {
 			break
+		}
+		if count == 10 {
+			return nil, errors.New("failed to verify whether wireless is enabled")
 		}
 	}
 
@@ -67,18 +72,18 @@ func NewProvisioningManager(ctx context.Context, logger golog.Logger) (*linuxPro
 			if err != nil {
 				return nil, errors.WithMessage(err, "failed to get property interface")
 			}
-			logger.Infof("recognized ethernet interface: %s, but looking for wifi", ifName)
+			logger.Infof("recognized ethernet interface: %s, but looking for Wi-Fi", ifName)
 			continue
 		case nm.NmDeviceTypeWifi:
 			wifiDev, ok := device.(nm.DeviceWireless)
 			if !ok {
-				return nil, errors.WithMessage(err, "failed to cast \"wifi\" device type to \"wireless\" device type")
+				return nil, errors.WithMessage(err, "failed to cast \"Wi-Fi\" device type to \"wireless\" device type")
 			}
 			ifName, err := wifiDev.GetPropertyInterface()
 			if err != nil {
 				return nil, errors.WithMessage(err, "failed to get property interface")
 			}
-			logger.Infof("recognized wifi interface: %s", ifName)
+			logger.Infof("recognized Wi-Fi interface: %s", ifName)
 			wifiDevice = wifiDev
 			break
 		default:
@@ -86,7 +91,7 @@ func NewProvisioningManager(ctx context.Context, logger golog.Logger) (*linuxPro
 		}
 	}
 	if wifiDevice == nil {
-		return nil, errors.New("no wifi device found")
+		return nil, errors.New("no Wi-Fi device found")
 	}
 
 	return &linuxProvisioningManager{
@@ -95,46 +100,110 @@ func NewProvisioningManager(ctx context.Context, logger golog.Logger) (*linuxPro
 	}, nil
 }
 
-func (lpm *linuxProvisioningManager) ConnectToWiFi(ssid, psk string) error {
+func (lpm *linuxProvisioningManager) ConnectToWiFi(ctx context.Context, logger golog.Logger, ssid, psk string) error {
 	wifiDevice := lpm.device
+	if err := wifiDevice.SetPropertyManaged(true); err != nil {
+		return errors.WithMessage(err, "failed to set Wi-Fi to \"managed\"")
+	}
 
-	wifiDevice.SetPropertyManaged(true)
+	// Record original system D-Bus NetworkManager properties (before scanning and attempting to connect to new Wi-Fi).
+	originalScan, err := wifiDevice.GetPropertyLastScan()
+	if err != nil {
+		return errors.WithMessage(err, "failure getting original scan of system D-Bus NetworkManager properties")
+	}
+
+	// Connect to D-Bus system bus
+	conn, err := dbus.SystemBus()
+	if err != nil {
+		return errors.WithMessage(err, "failed to connect to system D-Bus, cannot listen for changes to Wi-Fi properties (NetworkManager)")
+	}
 
 	// Scan for available Wi-Fi networks
-	err := wifiDevice.RequestScan()
-	if err != nil {
-		return errors.WithMessage(err, "Failed to scan Wi-Fi networks")
+	if err := wifiDevice.RequestScan(); err != nil {
+		return errors.WithMessage(err, "failed to scan for Wi-Fi networks")
+	}
+
+	// Add a match rule for NetworkManager properties changes
+	matchRule := fmt.Sprintf(
+		"type='signal'," +
+			"interface='org.freedesktop.DBus.Properties'," +
+			"member='PropertiesChanged'," +
+			"arg0='org.freedesktop.NetworkManager.Device.Wireless'",
+	)
+	if err := conn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, matchRule).Err; err != nil {
+		return errors.WithMessage(err, "failed to add match rule for system D-Bus NetworkManager properties changes")
+	}
+	// See if can replace the above 'conn.BusObject().Call()' with `conn.AddMatchSignal()`
+	// if err := conn.AddMatchSignal(dbus.WithMatchArg(0, matchRule)); err != nil {
+	// 	return errors.WithMessage(err, "failed to add match rule for NetworkManager properties changes")
+	// }
+	signals := make(chan *dbus.Signal) // Unbuffered channel to ensure blocking writes (no dropped signals).
+	conn.Signal(signals)
+
+	// Listen for D-Bus messages which signify a "new" last scan.
+	recordedNewScan := false
+	for {
+		if err := ctx.Err(); err != nil {
+			return errors.WithMessage(err, "failure getting changes to Wi-Fi properties")
+		}
+		select {
+		case <-ctx.Done():
+			return errors.WithMessage(ctx.Err(), "failure getting changes to Wi-Fi properties")
+		case signal := <-signals:
+			// Expecting: org.freedesktop.DBus.Properties::PropertiesChanged
+			if len(signal.Body) < 2 {
+				continue
+			}
+
+			// Extract the changed properties
+			changedProps, ok := signal.Body[1].(map[string]dbus.Variant)
+			if !ok {
+				continue
+			}
+
+			// Check if "LastScan" property has changed
+			lastScan, exists := changedProps["LastScan"]
+			if exists {
+				logger.Infof(
+					"recorded change to \"LastScan\" value (%v --> %v) in D-Bus NetworkManager properties, "+
+						"we are now ready to get Wi-Fi access points", originalScan, lastScan.Value(),
+				)
+				recordedNewScan = true
+				break
+			}
+			logger.Infof("recorded unrelated change to D-Bus properties: %v", lastScan)
+		default:
+		}
+		if recordedNewScan {
+			break
+		}
+		time.Sleep(time.Millisecond * 50)
 	}
 
 	// Wait for scan results
-	fmt.Println("Attempting to get available WiFi networks...")
-	accessPoints, _ := wifiDevice.GetAllAccessPoints()
-	attemptCounter := 0
-	for {
-		if attemptCounter == 5 {
-			log.Fatal("Unable to get access points, exiting program")
-		}
-		time.Sleep(time.Second)
+	logger.Infof("attempting to get available wifi networks...")
+	accessPoints, err := wifiDevice.GetAllAccessPoints()
+	if err != nil {
+		return errors.WithMessage(err, "unable to get all access points for Wi-Fi device")
+	}
 
-		// Get available access points
-		accessPoints, err := wifiDevice.GetAllAccessPoints()
+	var requestedAccessPoint nm.AccessPoint = nil
+	for _, ap := range accessPoints {
+		apSSID, err := ap.GetPropertySSID()
 		if err != nil {
-			log.Default().Printf("Failed to get access points: %v, will retry", err)
-			continue
+			return errors.WithMessage(err, "unable to get access point SSID")
 		}
-
-		// Display available Wi-Fi networks
-		if len(accessPoints) == 0 {
-			log.Default().Printf("No access points found, will retry")
-			continue
+		apStrength, err := ap.GetPropertyStrength()
+		if err != nil {
+			return errors.WithMessage(err, "unable to get access point strength")
 		}
-		fmt.Print("\nFound nearby access points!")
-		for _, ap := range accessPoints {
-			ssid, _ := ap.GetPropertySSID()
-			strength, _ := ap.GetPropertyStrength()
-			fmt.Printf("SSID: %s, Strength: %d\n", ssid, strength)
+		logger.Infof(" - SSID: %s, Strength: %d\n", apSSID, apStrength)
+		if requestedAccessPoint == nil && apSSID == ssid {
+			requestedAccessPoint = ap
 		}
-		break
+	}
+	if requestedAccessPoint == nil {
+		return errors.Errorf("failed to discover access point with SSID: %s", ssid)
 	}
 
 	// Create a new Wi-Fi connection profile
@@ -157,16 +226,11 @@ func (lpm *linuxProvisioningManager) ConnectToWiFi(ssid, psk string) error {
 			"method": "ignore",
 		},
 	}
-	for _, ap := range accessPoints {
-		ssid, _ := ap.GetPropertySSID()
-		fmt.Printf("- %s", ssid)
-		if ssid == "Viam" {
-			ac, err := lpm.networkManager.AddAndActivateWirelessConnection(connection, lpm.device, ap)
-			if err != nil {
-				return errors.WithMessage(err, "Failed to connect to WiFi")
-			}
-			fmt.Printf("\nSuccessully connected to WiFi: %s\n", ac)
-		}
+
+	// Attempt to make the Wi-Fi connection.
+	if _, err := lpm.networkManager.AddAndActivateWirelessConnection(connection, lpm.device, requestedAccessPoint); err != nil {
+		return errors.WithMessagef(err, "failed to connect to Wi-Fi")
 	}
+	logger.Infof("successfully connected to Wi-Fi: %s", ssid)
 	return nil
 }

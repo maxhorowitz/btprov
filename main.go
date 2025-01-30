@@ -13,16 +13,16 @@ var adapter = bluetooth.DefaultAdapter
 
 func main() {
 	ctx := context.Background()
-	logger := golog.NewDebugLogger("provisioning-wifi-debug-logger")
+	logger := golog.NewDebugLogger("provisioning")
 
-	// Once wifi credentials are transmitted over bluetooth, prepare
-	// network manager for wifi connection.
+	// Once Wi-Fi credentials are transmitted over bluetooth, prepare
+	// network manager for Wi-Fi connection.
 	lpm, err := pm.NewProvisioningManager(ctx, logger)
 	if err != nil {
 		log.Fatalf("failure setting up provisioning manager: %v", err)
 	}
-	if err := lpm.ConnectToWiFi("Viam", "checkmate"); err != nil {
-		log.Fatalf("failure connection to wifi: %v", err)
+	if err := lpm.ConnectToWiFi(ctx, logger, "Viam", "checkmate"); err != nil {
+		log.Fatalf("failure connection to Wi-Fi: %v", err)
 	}
 }
 
