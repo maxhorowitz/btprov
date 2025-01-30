@@ -54,7 +54,7 @@ func NewProvisioningManager(ctx context.Context, logger golog.Logger) (*linuxPro
 	}
 
 	// Find a Wi-Fi device
-	var wifiDevice nm.DeviceWireless
+	var wifiDevice nm.DeviceWireless = nil
 	for _, device := range devices {
 		deviceType, err := device.GetPropertyDeviceType()
 		if err != nil {
@@ -85,9 +85,11 @@ func NewProvisioningManager(ctx context.Context, logger golog.Logger) (*linuxPro
 			}
 			logger.Infof("recognized Wi-Fi interface: %s", ifName)
 			wifiDevice = wifiDev
-			break
 		default:
 			continue
+		}
+		if wifiDevice != nil {
+			break
 		}
 	}
 	if wifiDevice == nil {
@@ -171,13 +173,13 @@ func (lpm *linuxProvisioningManager) ConnectToWiFi(ctx context.Context, logger g
 				recordedNewScan = true
 				break
 			}
-			logger.Infof("recorded unrelated change to D-Bus properties: %v", lastScan)
+			logger.Info("recorded unrelated change to D-Bus properties")
 		default:
 		}
 		if recordedNewScan {
 			break
 		}
-		time.Sleep(time.Millisecond * 50)
+		time.Sleep(time.Second)
 	}
 
 	// Wait for scan results
@@ -197,7 +199,7 @@ func (lpm *linuxProvisioningManager) ConnectToWiFi(ctx context.Context, logger g
 		if err != nil {
 			return errors.WithMessage(err, "unable to get access point strength")
 		}
-		logger.Infof(" - SSID: %s, Strength: %d\n", apSSID, apStrength)
+		logger.Infof(" - SSID: %s, Strength: %d", apSSID, apStrength)
 		if requestedAccessPoint == nil && apSSID == ssid {
 			requestedAccessPoint = ap
 		}
