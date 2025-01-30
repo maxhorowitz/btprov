@@ -184,13 +184,11 @@ func (lwm *linuxWiFiManager) ConnectToWiFi(ctx context.Context, ssid, psk string
 				recordedNewScan = true
 				break
 			}
-			lwm.logger.Info("recorded unrelated change to D-Bus properties")
 		default:
 		}
 		if recordedNewScan {
 			break
 		}
-		time.Sleep(time.Second)
 	}
 
 	// Wait for scan results

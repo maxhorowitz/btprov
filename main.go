@@ -5,7 +5,7 @@ import (
 	"log"
 
 	"github.com/edaniels/golog"
-	pm "github.com/maxhorowitz/btprov/provisioning_manager"
+	pm "github.com/maxhorowitz/btprov/wifi_manager"
 	"tinygo.org/x/bluetooth"
 )
 
