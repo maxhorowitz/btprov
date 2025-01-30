@@ -3,6 +3,7 @@ package provisioningmanager
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	nm "github.com/Wifx/gonetworkmanager"
@@ -12,16 +13,22 @@ import (
 	"go.viam.com/utils"
 )
 
-type ProvisioningManager interface {
-	ConnectToWiFi(ctx context.Context, logger golog.Logger, ssid, psk string) error
+type WiFiManager interface {
+	ConnectToWiFi(ctx context.Context, ssid, psk string) error
+	IsConnectedToWiFi() bool
 }
 
-type linuxProvisioningManager struct {
+type linuxWiFiManager struct {
+	mu *sync.Mutex
+
+	logger          golog.Logger
+	currentWiFiSSID string
+
 	networkManager nm.NetworkManager
 	device         nm.DeviceWireless
 }
 
-func NewProvisioningManager(ctx context.Context, logger golog.Logger) (*linuxProvisioningManager, error) {
+func NewWiFiManager(ctx context.Context, logger golog.Logger) (*linuxWiFiManager, error) {
 	networkManager, err := nm.NewNetworkManager()
 	if err != nil {
 		return nil, errors.WithMessage(err, "failed to connect to network manager")
@@ -95,15 +102,19 @@ func NewProvisioningManager(ctx context.Context, logger golog.Logger) (*linuxPro
 	if wifiDevice == nil {
 		return nil, errors.New("no Wi-Fi device found")
 	}
-
-	return &linuxProvisioningManager{
+	return &linuxWiFiManager{
+		mu:             &sync.Mutex{},
+		logger:         logger,
 		networkManager: networkManager,
 		device:         wifiDevice,
 	}, nil
 }
 
-func (lpm *linuxProvisioningManager) ConnectToWiFi(ctx context.Context, logger golog.Logger, ssid, psk string) error {
-	wifiDevice := lpm.device
+func (lwm *linuxWiFiManager) ConnectToWiFi(ctx context.Context, ssid, psk string) error {
+	lwm.mu.Lock()
+	defer lwm.mu.Unlock()
+
+	wifiDevice := lwm.device
 	if err := wifiDevice.SetPropertyManaged(true); err != nil {
 		return errors.WithMessage(err, "failed to set Wi-Fi to \"managed\"")
 	}
@@ -166,14 +177,14 @@ func (lpm *linuxProvisioningManager) ConnectToWiFi(ctx context.Context, logger g
 			// Check if "LastScan" property has changed
 			lastScan, exists := changedProps["LastScan"]
 			if exists {
-				logger.Infof(
+				lwm.logger.Infof(
 					"recorded change to \"LastScan\" value (%v --> %v) in D-Bus NetworkManager properties, "+
 						"we are now ready to get Wi-Fi access points", originalScan, lastScan.Value(),
 				)
 				recordedNewScan = true
 				break
 			}
-			logger.Info("recorded unrelated change to D-Bus properties")
+			lwm.logger.Info("recorded unrelated change to D-Bus properties")
 		default:
 		}
 		if recordedNewScan {
@@ -183,7 +194,7 @@ func (lpm *linuxProvisioningManager) ConnectToWiFi(ctx context.Context, logger g
 	}
 
 	// Wait for scan results
-	logger.Infof("attempting to get available wifi networks...")
+	lwm.logger.Infof("attempting to get available wifi networks...")
 	accessPoints, err := wifiDevice.GetAllAccessPoints()
 	if err != nil {
 		return errors.WithMessage(err, "unable to get all access points for Wi-Fi device")
@@ -199,7 +210,7 @@ func (lpm *linuxProvisioningManager) ConnectToWiFi(ctx context.Context, logger g
 		if err != nil {
 			return errors.WithMessage(err, "unable to get access point strength")
 		}
-		logger.Infof(" - SSID: %s, Strength: %d", apSSID, apStrength)
+		lwm.logger.Infof(" - SSID: %s, Strength: %d", apSSID, apStrength)
 		if requestedAccessPoint == nil && apSSID == ssid {
 			requestedAccessPoint = ap
 		}
@@ -230,9 +241,27 @@ func (lpm *linuxProvisioningManager) ConnectToWiFi(ctx context.Context, logger g
 	}
 
 	// Attempt to make the Wi-Fi connection.
-	if _, err := lpm.networkManager.AddAndActivateWirelessConnection(connection, lpm.device, requestedAccessPoint); err != nil {
+	if _, err := lwm.networkManager.AddAndActivateWirelessConnection(connection, lwm.device, requestedAccessPoint); err != nil {
 		return errors.WithMessagef(err, "failed to connect to Wi-Fi")
 	}
-	logger.Infof("successfully connected to Wi-Fi: %s", ssid)
+
+	startTime := time.Now()
+	for {
+		if !utils.SelectContextOrWait(ctx, time.Second) {
+			return errors.WithMessagef(err, "added and activated Wi-Fi, but have not established internet connection")
+		}
+		if lwm.networkManager.CheckConnectivity() == nil {
+			break
+		}
+		lwm.logger.Infof("still attempting to establish internet connection...")
+	}
+	lwm.logger.Infof("successfully connected to Wi-Fi: %s, established connection in %v seconds", ssid, time.Now().Sub(startTime).Seconds())
+	lwm.currentWiFiSSID = ssid
 	return nil
+}
+
+func (lwm *linuxWiFiManager) IsConnectedToWiFi() bool {
+	lwm.mu.Lock()
+	defer lwm.mu.Unlock()
+	return lwm.currentWiFiSSID != ""
 }
