@@ -1,4 +1,4 @@
-package provisioningmanager
+package wifimanager
 
 import (
 	"context"
@@ -28,7 +28,7 @@ type linuxWiFiManager struct {
 	device         nm.DeviceWireless
 }
 
-func NewWiFiManager(ctx context.Context, logger golog.Logger) (*linuxWiFiManager, error) {
+func NewLinuxWiFiManager(ctx context.Context, logger golog.Logger) (WiFiManager, error) {
 	networkManager, err := nm.NewNetworkManager()
 	if err != nil {
 		return nil, errors.WithMessage(err, "failed to connect to network manager")
@@ -57,7 +57,7 @@ func NewWiFiManager(ctx context.Context, logger golog.Logger) (*linuxWiFiManager
 	// Get a list of network devices
 	devices, err := networkManager.GetDevices()
 	if err != nil {
-		return nil, errors.WithMessage(err, "failed to get devices")
+		return nil, errors.WithMessage(err, "failed to get network devices")
 	}
 
 	// Find a Wi-Fi device
@@ -65,7 +65,7 @@ func NewWiFiManager(ctx context.Context, logger golog.Logger) (*linuxWiFiManager
 	for _, device := range devices {
 		deviceType, err := device.GetPropertyDeviceType()
 		if err != nil {
-			return nil, errors.WithMessage(err, "failed to get device type")
+			return nil, errors.WithMessage(err, "failed to get network device type")
 		}
 
 		//nolint:exhaustive
