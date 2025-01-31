@@ -2,7 +2,6 @@ package blemanager
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	"github.com/pkg/errors"
@@ -22,7 +21,7 @@ type BLEPeripheral interface {
 	ReadRobotPartKey() (string, error)
 }
 
-type characteristic[T any] struct {
+type linuxBLECharacteristic[T any] struct {
 	UUID   bluetooth.UUID
 	mu     *sync.Mutex
 	active bool // Currently non-functional, but should be used to make characteristics optional.
@@ -30,7 +29,7 @@ type characteristic[T any] struct {
 	currentValue T
 }
 
-type service struct {
+type linuxBLEService struct {
 	logger golog.Logger
 	mu     *sync.Mutex
 
@@ -38,10 +37,10 @@ type service struct {
 	advActive bool
 	UUID      bluetooth.UUID
 
-	characteristicSsid           *characteristic[*string]
-	characteristicPsk            *characteristic[*string]
-	characteristicRobotPartKeyID *characteristic[*string]
-	characteristicRobotPartKey   *characteristic[*string]
+	characteristicSsid           *linuxBLECharacteristic[*string]
+	characteristicPsk            *linuxBLECharacteristic[*string]
+	characteristicRobotPartKeyID *linuxBLECharacteristic[*string]
+	characteristicRobotPartKey   *linuxBLECharacteristic[*string]
 }
 
 func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string) (BLEPeripheral, error) {
@@ -57,25 +56,25 @@ func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string) 
 	charRobotPartKeyUUID := bluetooth.NewUUID(uuid.New())
 
 	// Create abstracted characteristics which act as a buffer for reading data from bluetooth.
-	charSsid := &characteristic[*string]{
+	charSsid := &linuxBLECharacteristic[*string]{
 		UUID:         charSsidUUID,
 		mu:           &sync.Mutex{},
 		active:       true,
 		currentValue: nil,
 	}
-	charPsk := &characteristic[*string]{
+	charPsk := &linuxBLECharacteristic[*string]{
 		UUID:         charPskUUID,
 		mu:           &sync.Mutex{},
 		active:       true,
 		currentValue: nil,
 	}
-	charRobotPartKeyID := &characteristic[*string]{
+	charRobotPartKeyID := &linuxBLECharacteristic[*string]{
 		UUID:         charRobotPartKeyIDUUID,
 		mu:           &sync.Mutex{},
 		active:       true,
 		currentValue: nil,
 	}
-	charRobotPartKey := &characteristic[*string]{
+	charRobotPartKey := &linuxBLECharacteristic[*string]{
 		UUID:         charRobotPartKeyUUID,
 		mu:           &sync.Mutex{},
 		active:       true,
@@ -156,7 +155,7 @@ func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string) 
 	); err != nil {
 		return nil, errors.WithMessage(err, "failed to configure default advertisement")
 	}
-	return &service{
+	return &linuxBLEService{
 		logger: logger,
 		mu:     &sync.Mutex{},
 
@@ -171,7 +170,7 @@ func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string) 
 	}, nil
 }
 
-func (s *service) StartAdvertising() error {
+func (s *linuxBLEService) StartAdvertising() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -189,7 +188,7 @@ func (s *service) StartAdvertising() error {
 	return nil
 }
 
-func (s *service) StopAdvertising() error {
+func (s *linuxBLEService) StopAdvertising() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -207,7 +206,7 @@ func (s *service) StopAdvertising() error {
 	return nil
 }
 
-func (s *service) ReadSsid() (string, error) {
+func (s *linuxBLEService) ReadSsid() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -227,7 +226,7 @@ func (s *service) ReadSsid() (string, error) {
 	return *s.characteristicSsid.currentValue, nil
 }
 
-func (s *service) ReadPsk() (string, error) {
+func (s *linuxBLEService) ReadPsk() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -247,7 +246,7 @@ func (s *service) ReadPsk() (string, error) {
 	return *s.characteristicPsk.currentValue, nil
 }
 
-func (s *service) ReadRobotPartKeyID() (string, error) {
+func (s *linuxBLEService) ReadRobotPartKeyID() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -267,7 +266,7 @@ func (s *service) ReadRobotPartKeyID() (string, error) {
 	return *s.characteristicRobotPartKeyID.currentValue, nil
 }
 
-func (s *service) ReadRobotPartKey() (string, error) {
+func (s *linuxBLEService) ReadRobotPartKey() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -285,82 +284,4 @@ func (s *service) ReadRobotPartKey() (string, error) {
 		return "", nil
 	}
 	return *s.characteristicRobotPartKey.currentValue, nil
-}
-
-func Old() {
-	adapter := bluetooth.DefaultAdapter
-
-	// Enable the Bluetooth adapter
-	err := adapter.Enable()
-	if err != nil {
-		panic(fmt.Sprintf("Failed to enable adapter: %v", err))
-	}
-	// Generate BLE UUIDs
-	serviceUUID := bluetooth.NewUUID(uuid.New())
-	charUUIDReadWrite := bluetooth.NewUUID(uuid.New())
-	charUUIDWriteOnly := bluetooth.NewUUID(uuid.New())
-
-	// Convert UUIDs to string format
-	serviceUUIDStr := serviceUUID.String()
-	charUUIDReadWriteStr := charUUIDReadWrite.String()
-	charUUIDWriteOnlyStr := charUUIDWriteOnly.String()
-
-	// Print the UUIDs with labels
-	fmt.Println("Generated BLE UUIDs:")
-	fmt.Println("Service UUID         :", serviceUUIDStr)
-	fmt.Println("Characteristic 1 UUID:", charUUIDReadWriteStr)
-	fmt.Println("Characteristic 2 UUID:", charUUIDWriteOnlyStr)
-
-	// Create a read and write characteristic
-	characteristicConfigReadWrite := bluetooth.CharacteristicConfig{
-		UUID:  charUUIDReadWrite,
-		Flags: bluetooth.CharacteristicReadPermission | bluetooth.CharacteristicWritePermission | bluetooth.CharacteristicBroadcastPermission,
-		WriteEvent: func(client bluetooth.Connection, offset int, value []byte) {
-			fmt.Printf("Received data: %s\n", string(value))
-		},
-	}
-
-	// Create a write only characteristic
-	characteristicConfigWriteOnly := bluetooth.CharacteristicConfig{
-		UUID:  charUUIDWriteOnly,
-		Flags: bluetooth.CharacteristicWritePermission,
-		WriteEvent: func(client bluetooth.Connection, offset int, value []byte) {
-			fmt.Printf("Received data: %s\n", string(value))
-		},
-	}
-
-	// Create the service
-	service := &bluetooth.Service{
-		UUID: serviceUUID,
-		Characteristics: []bluetooth.CharacteristicConfig{
-			characteristicConfigReadWrite,
-			characteristicConfigWriteOnly,
-		},
-	}
-
-	// Add the service to the adapter
-	err = adapter.AddService(service)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to add service: %v", err))
-	}
-
-	// Start advertising the service
-	if err := adapter.Enable(); err != nil {
-		panic(fmt.Sprintf("Failed to enable the adapter: %v", err))
-	}
-	adv := adapter.DefaultAdvertisement()
-	if adv == nil {
-		panic("default advertisement is nil")
-	}
-	if err := adv.Configure(bluetooth.AdvertisementOptions{
-		LocalName:    "Max Horowitz II Raspberry Pi5",
-		ServiceUUIDs: []bluetooth.UUID{serviceUUID},
-	}); err != nil {
-		panic("failed to configure bluetooth advertisement")
-	}
-	if err := adv.Start(); err != nil {
-		panic("failed to start advertising")
-	}
-	fmt.Println("Bluetooth service is running...")
-	select {} // Block forever
 }

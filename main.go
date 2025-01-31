@@ -12,11 +12,6 @@ import (
 )
 
 func main() {
-	// bm.Old()
-	new()
-}
-
-func new() {
 	ctx := context.Background()
 
 	// Spin up a BLE connection for accepting Wi-Fi credentials.
