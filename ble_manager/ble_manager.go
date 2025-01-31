@@ -49,15 +49,15 @@ func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string) 
 		return nil, errors.WithMessage(err, "failed to enable bluetooth adapter")
 	}
 
-	serviceUUID := bluetooth.NewUUID(uuid.New())
+	serviceUUID := bluetooth.NewUUID(uuid.New()).Replace16BitComponent(0x1111)
 	logger.Infof("serviceUUID: %s", serviceUUID.String())
-	charSsidUUID := bluetooth.NewUUID(uuid.New())
+	charSsidUUID := bluetooth.NewUUID(uuid.New()).Replace16BitComponent(0x2222)
 	logger.Infof("charSsidUUID: %s", charSsidUUID.String())
-	charPskUUID := bluetooth.NewUUID(uuid.New())
+	charPskUUID := bluetooth.NewUUID(uuid.New()).Replace16BitComponent(0x3333)
 	logger.Infof("charPskUUID: %s", charPskUUID.String())
-	charRobotPartKeyIDUUID := bluetooth.NewUUID(uuid.New())
+	charRobotPartKeyIDUUID := bluetooth.NewUUID(uuid.New()).Replace16BitComponent(0x4444)
 	logger.Infof("charRobotPartKeyIDUUID: %s", charRobotPartKeyIDUUID.String())
-	charRobotPartKeyUUID := bluetooth.NewUUID(uuid.New())
+	charRobotPartKeyUUID := bluetooth.NewUUID(uuid.New()).Replace16BitComponent(0x5555)
 	logger.Infof("charRobotPartKeyUUID: %s", charRobotPartKeyUUID.String())
 
 	// Create abstracted characteristics which act as a buffer for reading data from bluetooth.
