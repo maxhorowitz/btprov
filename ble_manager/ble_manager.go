@@ -50,10 +50,15 @@ func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string) 
 	}
 
 	serviceUUID := bluetooth.NewUUID(uuid.New())
+	logger.Infof("serviceUUID: %s", serviceUUID.String())
 	charSsidUUID := bluetooth.NewUUID(uuid.New())
+	logger.Infof("charSsidUUID: %s", charSsidUUID.String())
 	charPskUUID := bluetooth.NewUUID(uuid.New())
+	logger.Infof("charPskUUID: %s", charPskUUID.String())
 	charRobotPartKeyIDUUID := bluetooth.NewUUID(uuid.New())
+	logger.Infof("charRobotPartKeyIDUUID: %s", charRobotPartKeyIDUUID.String())
 	charRobotPartKeyUUID := bluetooth.NewUUID(uuid.New())
+	logger.Infof("charRobotPartKeyUUID: %s", charRobotPartKeyUUID.String())
 
 	// Create abstracted characteristics which act as a buffer for reading data from bluetooth.
 	charSsid := &linuxBLECharacteristic[*string]{
