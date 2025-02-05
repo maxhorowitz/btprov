@@ -3,8 +3,11 @@ package bleperipheral
 import (
 	"context"
 	"fmt"
+	"log"
+	"strings"
 	"sync"
 
+	"github.com/godbus/dbus"
 	"github.com/pkg/errors"
 
 	"github.com/edaniels/golog"
@@ -304,4 +307,50 @@ func (s *linuxBLEService) ReadRobotPartKey() (string, error) {
 		return "", newErrBLECharNoValue("robot part key")
 	}
 	return *s.characteristicRobotPartKey.currentValue, nil
+}
+
+// autoConfirmPairing listens for pairing requests and auto-confirms them.
+func autoConfirmPairing() {
+	conn, err := dbus.SystemBus()
+	if err != nil {
+		log.Fatalf("Failed to connect to D-Bus: %v", err)
+	}
+
+	// BlueZ Agent registration (ensuring we handle pairing requests)
+	obj := conn.Object("org.bluez", "/org/bluez")
+	call := obj.Call("org.bluez.AgentManager1.RegisterAgent", 0, "/auto_agent", "NoInputNoOutput")
+	if call.Err != nil && !strings.Contains(call.Err.Error(), "AlreadyExists") {
+		log.Fatalf("Failed to register agent: %v", call.Err)
+	}
+
+	log.Println("Auto-confirm pairing agent registered.")
+
+	// Listen for D-Bus pairing requests
+	signalChan := make(chan *dbus.Signal, 10)
+	conn.Signal(signalChan)
+
+	for signal := range signalChan {
+		if len(signal.Body) > 0 {
+			switch signal.Name {
+			case "org.freedesktop.DBus.Properties.PropertiesChanged":
+				fmt.Println("Received PropertiesChanged signal:", signal.Body)
+			case "org.bluez.Device1.RequestPasskey":
+				// Auto-confirm passkey as 123456
+				devicePath := signal.Body[0].(dbus.ObjectPath)
+				log.Printf("Auto-confirming passkey for %s\n", devicePath)
+				reply := conn.Object("org.bluez", devicePath).Call("org.bluez.Device1.SetPasskey", 0, uint32(123456))
+				if reply.Err != nil {
+					log.Printf("Failed to confirm passkey: %v\n", reply.Err)
+				}
+			case "org.bluez.Device1.RequestConfirmation":
+				// Auto-confirm pairing
+				devicePath := signal.Body[0].(dbus.ObjectPath)
+				log.Printf("Auto-confirming pairing for %s\n", devicePath)
+				reply := conn.Object("org.bluez", devicePath).Call("org.bluez.Device1.ConfirmPairing", 0)
+				if reply.Err != nil {
+					log.Printf("Failed to confirm pairing: %v\n", reply.Err)
+				}
+			}
+		}
+	}
 }
