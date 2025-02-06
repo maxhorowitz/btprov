@@ -14,6 +14,7 @@ require (
 
 require (
 	github.com/go-ole/go-ole v1.3.0 // indirect
+	github.com/godbus/dbus v4.1.0+incompatible // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0 // indirect
 	github.com/saltosystems/winrt-go v0.0.0-20241223121953-98e32661f6ff // indirect

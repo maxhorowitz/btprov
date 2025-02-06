@@ -3,9 +3,9 @@ package bleperipheral
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/godbus/dbus"
 	"github.com/pkg/errors"
@@ -16,7 +16,7 @@ import (
 )
 
 type BLEPeripheral interface {
-	StartAdvertising() error
+	StartAdvertising(context.Context) error
 	StopAdvertising() error
 
 	ReadSsid() (string, error)
@@ -179,7 +179,7 @@ func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string) 
 	}, nil
 }
 
-func (s *linuxBLEService) StartAdvertising() error {
+func (s *linuxBLEService) StartAdvertising(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -191,6 +191,9 @@ func (s *linuxBLEService) StartAdvertising() error {
 	}
 	if err := s.adv.Start(); err != nil {
 		return errors.WithMessage(err, "failed to start advertising")
+	}
+	if err := s.autoConfirmPairing(ctx); err != nil {
+		s.logger.Errorw("failed to set up auto-confirmation for BLE pairing requests", "err", err)
 	}
 	s.advActive = true
 	s.logger.Info("started advertising a BLE connection...")
@@ -309,48 +312,78 @@ func (s *linuxBLEService) ReadRobotPartKey() (string, error) {
 	return *s.characteristicRobotPartKey.currentValue, nil
 }
 
-// autoConfirmPairing listens for pairing requests and auto-confirms them.
-func autoConfirmPairing() {
+// autoConfirmPairing listens for pairing requests and auto-confirms them, returning true if successful and false otherwise.
+func (s *linuxBLEService) autoConfirmPairing(ctx context.Context) error {
 	conn, err := dbus.SystemBus()
 	if err != nil {
-		log.Fatalf("Failed to connect to D-Bus: %v", err)
+		return errors.WithMessage(err, "failed to connect to D-Bus")
 	}
 
 	// BlueZ Agent registration (ensuring we handle pairing requests)
 	obj := conn.Object("org.bluez", "/org/bluez")
-	call := obj.Call("org.bluez.AgentManager1.RegisterAgent", 0, "/auto_agent", "NoInputNoOutput")
-	if call.Err != nil && !strings.Contains(call.Err.Error(), "AlreadyExists") {
-		log.Fatalf("Failed to register agent: %v", call.Err)
+	call := obj.Call("org.bluez.AgentManager1.RegisterAgent", 0, dbus.ObjectPath("/org/bluez/auto_agent"), "NoInputNoOutput")
+	if err := call.Err; err != nil && !strings.Contains(err.Error(), "AlreadyExists") {
+		return errors.WithMessage(err, "failed to register BlueZ agent")
 	}
 
-	log.Println("Auto-confirm pairing agent registered.")
+	// Set the above BlueZ Agent as the default agent.
+	call = obj.Call("org.bluez.AgentManager1.RequestDefaultAgent", 0, dbus.ObjectPath("/org/bluez/auto_agent"))
+	if err := call.Err; err != nil {
+		return errors.WithMessage(err, "failed to register BlueZ agent as default agent")
+	}
 
-	// Listen for D-Bus pairing requests
-	signalChan := make(chan *dbus.Signal, 10)
-	conn.Signal(signalChan)
+	// Subscribe to pairing-related signals.
+	// matchRule := "type='signal',interface='org.freedesktop.DBus.Properties'"
+	// conn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, matchRule)
+	matchRule := "type='signal',interface='org.bluez.Device1'"
+	conn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, matchRule)
 
-	for signal := range signalChan {
-		if len(signal.Body) > 0 {
-			switch signal.Name {
-			case "org.freedesktop.DBus.Properties.PropertiesChanged":
-				fmt.Println("Received PropertiesChanged signal:", signal.Body)
-			case "org.bluez.Device1.RequestPasskey":
-				// Auto-confirm passkey as 123456
-				devicePath := signal.Body[0].(dbus.ObjectPath)
-				log.Printf("Auto-confirming passkey for %s\n", devicePath)
-				reply := conn.Object("org.bluez", devicePath).Call("org.bluez.Device1.SetPasskey", 0, uint32(123456))
-				if reply.Err != nil {
-					log.Printf("Failed to confirm passkey: %v\n", reply.Err)
-				}
-			case "org.bluez.Device1.RequestConfirmation":
-				// Auto-confirm pairing
-				devicePath := signal.Body[0].(dbus.ObjectPath)
-				log.Printf("Auto-confirming pairing for %s\n", devicePath)
-				reply := conn.Object("org.bluez", devicePath).Call("org.bluez.Device1.ConfirmPairing", 0)
-				if reply.Err != nil {
-					log.Printf("Failed to confirm pairing: %v\n", reply.Err)
+	// After registering auto-confirm pairing, listen for D-Bus pairing requests
+	signals := make(chan *dbus.Signal, 50)
+	conn.Signal(signals)
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case signal := <-signals:
+			s.logger.Infof("received signal: %v", signal)
+			if len(signal.Body) > 0 {
+				switch signal.Name {
+				case "org.bluez.Device1.RequestPasskey":
+					// Auto-confirm passkey as 123456
+					devicePath := signal.Body[0].(dbus.ObjectPath)
+					s.logger.Infof("auto-confirming passkey for %s", devicePath)
+					reply := conn.Object("org.bluez", devicePath).Call("org.bluez.Device1.SetPasskey", 0, uint32(123456))
+					if reply.Err != nil {
+						s.logger.Errorf("failed to confirm passkey: %v", reply.Err)
+					}
+					return nil
+				case "org.bluez.Device1.RequestConfirmation":
+					// Auto-confirm pairing
+					devicePath := signal.Body[0].(dbus.ObjectPath)
+					s.logger.Infof("auto-confirming pairing for %s", devicePath)
+					reply := conn.Object("org.bluez", devicePath).Call("org.bluez.Device1.ConfirmPairing", 0)
+					if err := reply.Err; err != nil {
+						s.logger.Errorf("failed to confirm pairing: %v", reply.Err)
+					}
+					return nil
+				case "org.bluez.Device1.RequestAuthorization":
+					// Auto-authorize pairing
+					devicePath := signal.Body[0].(dbus.ObjectPath)
+					s.logger.Infof("auto-authorizing pairing for %s", devicePath)
+					reply := conn.Object("org.bluez", devicePath).Call("org.bluez.Device1.AuthorizeService", 0, "yes")
+					if err := reply.Err; err != nil {
+						s.logger.Errorf("failed to set passkey: %v", reply.Err)
+					}
+					return nil
+				default:
 				}
 			}
+		default:
+			time.Sleep(time.Millisecond * 1000)
 		}
 	}
 }

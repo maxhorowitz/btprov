@@ -18,7 +18,7 @@ func main() {
 	if err != nil {
 		bLogger.Fatalf("failed to set up BLE manager: %v", err)
 	}
-	if err := blep.StartAdvertising(); err != nil {
+	if err := blep.StartAdvertising(ctx); err != nil {
 		bLogger.Fatalf("failed to start advertising characteristics in BLE: %v", err)
 	}
 	credentials, err := bm.WaitForCredentials(ctx, bLogger, blep)
