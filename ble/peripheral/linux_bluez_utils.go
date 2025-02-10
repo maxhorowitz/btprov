@@ -87,8 +87,11 @@ func listenForPairing(logger golog.Logger) error {
 			continue
 		}
 
-		paired, exists := changedProps["Connected"]
-		if !exists || paired.Value() != true {
+		// BLE pairing attempts from iPhones connect before pairing, so
+		// listen for a "Connected" event on the system D-Bus. TODO: test
+		// this works on an Android.
+		connected, exists := changedProps["Connected"]
+		if !exists || connected.Value() != true {
 			continue
 		}
 
