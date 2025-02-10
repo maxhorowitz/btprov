@@ -80,6 +80,10 @@ type linuxBLEService struct {
 }
 
 func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string, awns ...availableWiFiNetwork) (BLEPeripheral, error) {
+	if err := validateSystem(logger); err != nil {
+		return nil, errors.WithMessage(err, "cannot initialize bluetooth peripheral, system requisites not met")
+	}
+
 	adapter := bluetooth.DefaultAdapter
 	if err := adapter.Enable(); err != nil {
 		return nil, errors.WithMessage(err, "failed to enable bluetooth adapter")
