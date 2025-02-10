@@ -5,7 +5,6 @@ import (
 
 	"github.com/edaniels/golog"
 	bm "github.com/maxhorowitz/btprov/ble/manager"
-	bp "github.com/maxhorowitz/btprov/ble/peripheral"
 	wf "github.com/maxhorowitz/btprov/wifi"
 )
 
@@ -14,19 +13,19 @@ func main() {
 
 	// Spin up a BLE connection, wait for required credentials, and cleanly shut down when finished.
 	bLogger := golog.NewDebugLogger("BLE manager")
-	blep, err := bp.NewLinuxBLEPeripheral(ctx, bLogger, "Max Horowitz Raspberry Pi5")
+	bluetoothManager, err := bm.NewBluetoothManager(ctx, bLogger, "Max Horowitz Raspberry Pi 5")
 	if err != nil {
-		bLogger.Fatalf("failed to set up BLE manager: %v", err)
+		bLogger.Fatalw("failed to initialize bluetooth manager", "err", err)
 	}
-	if err := blep.StartAdvertising(ctx); err != nil {
-		bLogger.Fatalf("failed to start advertising characteristics in BLE: %v", err)
+	if err := bluetoothManager.AcceptIncomingConnections(ctx); err != nil {
+		bLogger.Fatalw("failed to accept incoming connections", "err", err)
 	}
-	credentials, err := bm.WaitForCredentials(ctx, bLogger, blep)
+	credentials, err := bluetoothManager.WaitForCredentials(ctx)
 	if err != nil {
-		bLogger.Fatalf("failed to get all required values over BLE: %v", err)
+		bLogger.Fatalw("failed to wait for credentials", "err", err)
 	}
-	if err := blep.StopAdvertising(); err != nil {
-		bLogger.Fatalf("failed to stop advertising characteristics in BLE: %v", err)
+	if err := bluetoothManager.RejectIncomingConnections(ctx); err != nil {
+		bLogger.Fatalw("failed to reject incoming connections", "err", err)
 	}
 
 	// Once Wi-Fi credentials are transmitted over bluetooth, prepare

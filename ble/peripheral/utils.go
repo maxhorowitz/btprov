@@ -16,46 +16,33 @@ const (
 	BluezAgent        = "org.bluez.Agent1"
 )
 
-// registerAgent registers a custom pairing agent to handle pairing requests.
-func registerAgent(logger golog.Logger) error {
+// listenForPairing waits for an incoming BLE pairing request and automatically trusts the device.
+func listenForPairing(logger golog.Logger) error {
 	conn, err := dbus.SystemBus()
 	if err != nil {
-		return fmt.Errorf("failed to connect to system DBus: %w", err)
+		return errors.WithMessage(err, "failed to connect to system DBus")
 	}
 
 	// Export agent methods
 	reply := conn.Export(nil, BluezAgentPath, BluezAgent)
 	if reply != nil {
-		return fmt.Errorf("failed to export agent: %w", reply)
+		return errors.WithMessage(reply, "failed to export Bluez agent")
 	}
 
 	// Register the agent
 	obj := conn.Object(BluezDBusService, "/org/bluez")
 	call := obj.Call("org.bluez.AgentManager1.RegisterAgent", 0, dbus.ObjectPath(BluezAgentPath), "NoInputNoOutput")
-	if call.Err != nil {
-		return fmt.Errorf("failed to register agent: %w", call.Err)
+	if err := call.Err; err != nil {
+		return errors.WithMessage(err, "failed to register Bluez agent")
 	}
 
 	// Set as the default agent
 	call = obj.Call("org.bluez.AgentManager1.RequestDefaultAgent", 0, dbus.ObjectPath(BluezAgentPath))
-	if call.Err != nil {
-		return fmt.Errorf("failed to set default agent: %w", call.Err)
+	if err := call.Err; err != nil {
+		return errors.WithMessage(err, "failed to set default Bluez agent")
 	}
 
-	logger.Info("bluetooth pairing agent registered.")
-	return nil
-}
-
-// listenForPairing waits for an incoming BLE pairing request and automatically trusts the device.
-func listenForPairing(logger golog.Logger) error {
-	if err := registerAgent(logger); err != nil {
-		return errors.WithMessage(err, "failed to register BlueZ agent")
-	}
-
-	conn, err := dbus.SystemBus()
-	if err != nil {
-		return errors.WithMessage(err, "failed to connect to system DBus")
-	}
+	logger.Info("Bluez agent registered!")
 
 	// Listen for properties changed events
 	signalChan := make(chan *dbus.Signal, 10)
@@ -65,7 +52,7 @@ func listenForPairing(logger golog.Logger) error {
 	matchRule := "type='signal',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'"
 	err = conn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, matchRule).Err
 	if err != nil {
-		return errors.WithMessage(err, "Failed to add DBus match rule")
+		return errors.WithMessage(err, "failed to add DBus match rule")
 	}
 
 	logger.Info("waiting for a BLE pairing request...")
@@ -87,9 +74,9 @@ func listenForPairing(logger golog.Logger) error {
 			continue
 		}
 
-		// BLE pairing attempts from iPhones connect before pairing, so
-		// listen for a "Connected" event on the system D-Bus. TODO: test
-		// this works on an Android.
+		// TODO [APP-7613]: Pairing attempts from an iPhone connect first
+		// before pairing, so listen for a "Connected" event on the system
+		// D-Bus. This should be tested against Android.
 		connected, exists := changedProps["Connected"]
 		if !exists || connected.Value() != true {
 			continue
