@@ -2,13 +2,12 @@ package bleperipheral
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
-	"time"
 
-	"github.com/godbus/dbus"
 	"github.com/pkg/errors"
+	"go.viam.com/utils"
 
 	"github.com/edaniels/golog"
 	"github.com/google/uuid"
@@ -23,6 +22,38 @@ type BLEPeripheral interface {
 	ReadPsk() (string, error)
 	ReadRobotPartKeyID() (string, error)
 	ReadRobotPartKey() (string, error)
+}
+
+type availableWiFiNetworks struct {
+	Networks []*availableWiFiNetwork `json:"networks"`
+}
+
+func (awns *availableWiFiNetworks) ToBytes() ([]byte, error) {
+	return json.Marshal(awns)
+}
+
+type availableWiFiNetwork struct {
+	Ssid        string  `json:"ssid"`
+	Strength    float64 `json:"strength"` // This float, in the inclusive range [0.0, 1.0], represents the % strength of a WiFi network.
+	RequiresPsk bool    `json:"requires_psk"`
+}
+
+func (awn *availableWiFiNetwork) ToBytes() ([]byte, error) {
+	return json.Marshal(awn)
+}
+
+func NewAvailableWiFiNetwork(ssid string, strength float64, requiresPsk bool) (*availableWiFiNetwork, error) {
+	if ssid == "" {
+		return nil, errors.New("must provide non-empty ssid")
+	}
+	if strength == 0 {
+		return nil, errors.New("must provide strength greater than zero")
+	}
+	return &availableWiFiNetwork{
+		Ssid:        ssid,
+		Strength:    strength,
+		RequiresPsk: requiresPsk,
+	}, nil
 }
 
 type linuxBLECharacteristic[T any] struct {
@@ -41,13 +72,14 @@ type linuxBLEService struct {
 	advActive bool
 	UUID      bluetooth.UUID
 
-	characteristicSsid           *linuxBLECharacteristic[*string]
-	characteristicPsk            *linuxBLECharacteristic[*string]
-	characteristicRobotPartKeyID *linuxBLECharacteristic[*string]
-	characteristicRobotPartKey   *linuxBLECharacteristic[*string]
+	characteristicSsid                  *linuxBLECharacteristic[*string]
+	characteristicPsk                   *linuxBLECharacteristic[*string]
+	characteristicRobotPartKeyID        *linuxBLECharacteristic[*string]
+	characteristicRobotPartKey          *linuxBLECharacteristic[*string]
+	characteristicAvailableWiFiNetworks *linuxBLECharacteristic[*string]
 }
 
-func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string) (BLEPeripheral, error) {
+func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string, awns ...availableWiFiNetwork) (BLEPeripheral, error) {
 	adapter := bluetooth.DefaultAdapter
 	if err := adapter.Enable(); err != nil {
 		return nil, errors.WithMessage(err, "failed to enable bluetooth adapter")
@@ -63,6 +95,8 @@ func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string) 
 	logger.Infof("charRobotPartKeyIDUUID: %s", charRobotPartKeyIDUUID.String())
 	charRobotPartKeyUUID := bluetooth.NewUUID(uuid.New()).Replace16BitComponent(0x5555)
 	logger.Infof("charRobotPartKeyUUID: %s", charRobotPartKeyUUID.String())
+	charAvailableWiFiNetworksUUID := bluetooth.NewUUID(uuid.New()).Replace16BitComponent(0x6666)
+	logger.Infof("charAvailableWiFiNetworksUUID: %s", charAvailableWiFiNetworksUUID.String())
 
 	// Create abstracted characteristics which act as a buffer for reading data from bluetooth.
 	charSsid := &linuxBLECharacteristic[*string]{
@@ -88,6 +122,11 @@ func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string) 
 		mu:           &sync.Mutex{},
 		active:       true,
 		currentValue: nil,
+	}
+	charAvailableWiFiNetworks := &linuxBLECharacteristic[*string]{
+		UUID:   charAvailableWiFiNetworksUUID,
+		mu:     &sync.Mutex{},
+		active: true,
 	}
 
 	// Create write-only, mutexed characteristics (one per credential).
@@ -136,6 +175,24 @@ func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string) 
 		},
 	}
 
+	// Instantiate a read-only characteristic for broadcasting nearby, available WiFi networks.
+	networks := make([]*availableWiFiNetwork, len(awns))
+	for i, awn := range awns {
+		networks[i] = &awn
+	}
+	availableWiFiNetworks := &availableWiFiNetworks{
+		Networks: networks,
+	}
+	availableWiFiNetworksBytes, err := availableWiFiNetworks.ToBytes()
+	if err != nil {
+		return nil, errors.WithMessage(err, "unable to marshal available networks into bytes")
+	}
+	charConfigAvailableWiFiNetworks := bluetooth.CharacteristicConfig{
+		UUID:  charAvailableWiFiNetworksUUID,
+		Flags: bluetooth.CharacteristicReadPermission,
+		Value: availableWiFiNetworksBytes, // Fill this in with available WiFi networks.
+	}
+
 	// Create service which will advertise each of the above characteristics.
 	s := &bluetooth.Service{
 		UUID: serviceUUID,
@@ -144,6 +201,7 @@ func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string) 
 			charConfigPsk,
 			charConfigRobotPartKeyID,
 			charConfigRobotPartKey,
+			charConfigAvailableWiFiNetworks,
 		},
 	}
 	if err := adapter.AddService(s); err != nil {
@@ -172,10 +230,11 @@ func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string) 
 		advActive: false,
 		UUID:      serviceUUID,
 
-		characteristicSsid:           charSsid,
-		characteristicPsk:            charPsk,
-		characteristicRobotPartKeyID: charRobotPartKeyID,
-		characteristicRobotPartKey:   charRobotPartKey,
+		characteristicSsid:                  charSsid,
+		characteristicPsk:                   charPsk,
+		characteristicRobotPartKeyID:        charRobotPartKeyID,
+		characteristicRobotPartKey:          charRobotPartKey,
+		characteristicAvailableWiFiNetworks: charAvailableWiFiNetworks,
 	}, nil
 }
 
@@ -192,9 +251,11 @@ func (s *linuxBLEService) StartAdvertising(ctx context.Context) error {
 	if err := s.adv.Start(); err != nil {
 		return errors.WithMessage(err, "failed to start advertising")
 	}
-	if err := s.autoConfirmPairing(ctx); err != nil {
-		s.logger.Errorw("failed to set up auto-confirmation for BLE pairing requests", "err", err)
-	}
+	utils.ManagedGo(func() {
+		if err := listenForPairing(s.logger); err != nil {
+			s.logger.Errorw("failed to listen for pairing requests and automatically connect", "err", err)
+		}
+	}, nil)
 	s.advActive = true
 	s.logger.Info("started advertising a BLE connection...")
 	return nil
@@ -310,80 +371,4 @@ func (s *linuxBLEService) ReadRobotPartKey() (string, error) {
 		return "", newErrBLECharNoValue("robot part key")
 	}
 	return *s.characteristicRobotPartKey.currentValue, nil
-}
-
-// autoConfirmPairing listens for pairing requests and auto-confirms them, returning true if successful and false otherwise.
-func (s *linuxBLEService) autoConfirmPairing(ctx context.Context) error {
-	conn, err := dbus.SystemBus()
-	if err != nil {
-		return errors.WithMessage(err, "failed to connect to D-Bus")
-	}
-
-	// BlueZ Agent registration (ensuring we handle pairing requests)
-	obj := conn.Object("org.bluez", "/org/bluez")
-	call := obj.Call("org.bluez.AgentManager1.RegisterAgent", 0, dbus.ObjectPath("/org/bluez/auto_agent"), "NoInputNoOutput")
-	if err := call.Err; err != nil && !strings.Contains(err.Error(), "AlreadyExists") {
-		return errors.WithMessage(err, "failed to register BlueZ agent")
-	}
-
-	// Set the above BlueZ Agent as the default agent.
-	call = obj.Call("org.bluez.AgentManager1.RequestDefaultAgent", 0, dbus.ObjectPath("/org/bluez/auto_agent"))
-	if err := call.Err; err != nil {
-		return errors.WithMessage(err, "failed to register BlueZ agent as default agent")
-	}
-
-	// Subscribe to pairing-related signals.
-	// matchRule := "type='signal',interface='org.freedesktop.DBus.Properties'"
-	// conn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, matchRule)
-	matchRule := "type='signal',interface='org.bluez.Device1'"
-	conn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, matchRule)
-
-	// After registering auto-confirm pairing, listen for D-Bus pairing requests
-	signals := make(chan *dbus.Signal, 50)
-	conn.Signal(signals)
-	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case signal := <-signals:
-			s.logger.Infof("received signal: %v", signal)
-			if len(signal.Body) > 0 {
-				switch signal.Name {
-				case "org.bluez.Device1.RequestPasskey":
-					// Auto-confirm passkey as 123456
-					devicePath := signal.Body[0].(dbus.ObjectPath)
-					s.logger.Infof("auto-confirming passkey for %s", devicePath)
-					reply := conn.Object("org.bluez", devicePath).Call("org.bluez.Device1.SetPasskey", 0, uint32(123456))
-					if reply.Err != nil {
-						s.logger.Errorf("failed to confirm passkey: %v", reply.Err)
-					}
-					return nil
-				case "org.bluez.Device1.RequestConfirmation":
-					// Auto-confirm pairing
-					devicePath := signal.Body[0].(dbus.ObjectPath)
-					s.logger.Infof("auto-confirming pairing for %s", devicePath)
-					reply := conn.Object("org.bluez", devicePath).Call("org.bluez.Device1.ConfirmPairing", 0)
-					if err := reply.Err; err != nil {
-						s.logger.Errorf("failed to confirm pairing: %v", reply.Err)
-					}
-					return nil
-				case "org.bluez.Device1.RequestAuthorization":
-					// Auto-authorize pairing
-					devicePath := signal.Body[0].(dbus.ObjectPath)
-					s.logger.Infof("auto-authorizing pairing for %s", devicePath)
-					reply := conn.Object("org.bluez", devicePath).Call("org.bluez.Device1.AuthorizeService", 0, "yes")
-					if err := reply.Err; err != nil {
-						s.logger.Errorf("failed to set passkey: %v", reply.Err)
-					}
-					return nil
-				default:
-				}
-			}
-		default:
-			time.Sleep(time.Millisecond * 1000)
-		}
-	}
 }

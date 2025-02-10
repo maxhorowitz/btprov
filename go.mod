@@ -5,16 +5,17 @@ go 1.23.5
 require (
 	github.com/Wifx/gonetworkmanager v0.5.0
 	github.com/edaniels/golog v0.0.0-20230215213219-28954395e8d0
+	github.com/godbus/dbus v4.1.0+incompatible
 	github.com/godbus/dbus/v5 v5.1.0
 	github.com/google/uuid v1.6.0
 	github.com/pkg/errors v0.9.1
+	go.uber.org/multierr v1.11.0
 	go.viam.com/utils v0.1.128
 	tinygo.org/x/bluetooth v0.10.0
 )
 
 require (
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/godbus/dbus v4.1.0+incompatible // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0 // indirect
 	github.com/saltosystems/winrt-go v0.0.0-20241223121953-98e32661f6ff // indirect
@@ -24,7 +25,6 @@ require (
 	github.com/tinygo-org/cbgo v0.0.4 // indirect
 	github.com/tinygo-org/pio v0.0.0-20241219082822-57ca4e0dc776 // indirect
 	go.uber.org/goleak v1.3.0 // indirect
-	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/exp v0.0.0-20250128144449-3edf0e91c1ae // indirect
 	golang.org/x/net v0.34.0 // indirect
