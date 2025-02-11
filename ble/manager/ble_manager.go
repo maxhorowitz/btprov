@@ -18,6 +18,10 @@ type bluetoothManager struct {
 	blep bp.BLEPeripheral
 }
 
+func (bm *bluetoothManager) UpdateAvailableWiFiNetworks(ctx context.Context, awns *bp.AvailableWiFiNetworks) {
+	bm.blep.UpdateAvailableWiFiNetworks(awns)
+}
+
 // AcceptIncomingConnections begins advertising a bluetooth service that acccepts WiFi and Viam cloud config credentials.
 func (bm *bluetoothManager) AcceptIncomingConnections(ctx context.Context) error {
 	return bm.blep.StartAdvertising(ctx)
@@ -66,8 +70,8 @@ func (bm *bluetoothManager) WaitForCredentials(ctx context.Context) (*credential
 	}, multierr.Combine(ssidErr, pskErr, robotPartKeyIDErr, robotPartKeyErr)
 }
 
-// NewBluetoothManager returns an initialized bluetooth manager.
-func NewBluetoothManager(ctx context.Context, logger golog.Logger, name string) (*bluetoothManager, error) {
+// NewBluetoothWiFiProvisioner returns a service which accepts credentials over bluetooth to provision a robot and its WiFi connection.
+func NewBluetoothWiFiProvisioner(ctx context.Context, logger golog.Logger, name string) (*bluetoothManager, error) {
 	blep, err := bp.NewLinuxBLEPeripheral(ctx, logger, name)
 	if err != nil {
 		return nil, errors.WithMessage(err, "failed to set up bluetooth-low-energy peripheral (Linux)")

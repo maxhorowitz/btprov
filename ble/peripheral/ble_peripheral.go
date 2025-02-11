@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/pkg/errors"
 	"go.viam.com/utils"
@@ -18,42 +19,24 @@ type BLEPeripheral interface {
 	StartAdvertising(context.Context) error
 	StopAdvertising() error
 
+	UpdateAvailableWiFiNetworks(*AvailableWiFiNetworks)
+
 	ReadSsid() (string, error)
 	ReadPsk() (string, error)
 	ReadRobotPartKeyID() (string, error)
 	ReadRobotPartKey() (string, error)
 }
 
-type availableWiFiNetworks struct {
-	Networks []*availableWiFiNetwork `json:"networks"`
+type AvailableWiFiNetworks struct {
+	Networks []*struct {
+		Ssid        string  `json:"ssid"`
+		Strength    float64 `json:"strength"` // This float, in the inclusive range [0.0, 1.0], represents the % strength of a WiFi network.
+		RequiresPsk bool    `json:"requires_psk"`
+	} `json:"networks"`
 }
 
-func (awns *availableWiFiNetworks) ToBytes() ([]byte, error) {
+func (awns *AvailableWiFiNetworks) ToBytes() ([]byte, error) {
 	return json.Marshal(awns)
-}
-
-type availableWiFiNetwork struct {
-	Ssid        string  `json:"ssid"`
-	Strength    float64 `json:"strength"` // This float, in the inclusive range [0.0, 1.0], represents the % strength of a WiFi network.
-	RequiresPsk bool    `json:"requires_psk"`
-}
-
-func (awn *availableWiFiNetwork) ToBytes() ([]byte, error) {
-	return json.Marshal(awn)
-}
-
-func NewAvailableWiFiNetwork(ssid string, strength float64, requiresPsk bool) (*availableWiFiNetwork, error) {
-	if ssid == "" {
-		return nil, errors.New("must provide non-empty ssid")
-	}
-	if strength == 0 {
-		return nil, errors.New("must provide strength greater than zero")
-	}
-	return &availableWiFiNetwork{
-		Ssid:        ssid,
-		Strength:    strength,
-		RequiresPsk: requiresPsk,
-	}, nil
 }
 
 type linuxBLECharacteristic[T any] struct {
@@ -72,14 +55,15 @@ type linuxBLEService struct {
 	advActive bool
 	UUID      bluetooth.UUID
 
-	characteristicSsid                  *linuxBLECharacteristic[*string]
-	characteristicPsk                   *linuxBLECharacteristic[*string]
-	characteristicRobotPartKeyID        *linuxBLECharacteristic[*string]
-	characteristicRobotPartKey          *linuxBLECharacteristic[*string]
-	characteristicAvailableWiFiNetworks *linuxBLECharacteristic[*string]
+	availableWiFiNetworksChannelWriteOnly chan<- *AvailableWiFiNetworks
+
+	characteristicSsid           *linuxBLECharacteristic[*string]
+	characteristicPsk            *linuxBLECharacteristic[*string]
+	characteristicRobotPartKeyID *linuxBLECharacteristic[*string]
+	characteristicRobotPartKey   *linuxBLECharacteristic[*string]
 }
 
-func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string, awns ...availableWiFiNetwork) (BLEPeripheral, error) {
+func NewLinuxBLEPeripheral(ctx context.Context, logger golog.Logger, name string) (BLEPeripheral, error) {
 	if err := validateSystem(logger); err != nil {
 		return nil, errors.WithMessage(err, "cannot initialize bluetooth peripheral, system requisites not met")
 	}
@@ -127,13 +111,8 @@ func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string, 
 		active:       true,
 		currentValue: nil,
 	}
-	charAvailableWiFiNetworks := &linuxBLECharacteristic[*string]{
-		UUID:   charAvailableWiFiNetworksUUID,
-		mu:     &sync.Mutex{},
-		active: true,
-	}
 
-	// Create write-only, mutexed characteristics (one per credential).
+	// Create write-only, locking characteristics (one per credential) for fields that are written to.
 	charConfigSsid := bluetooth.CharacteristicConfig{
 		UUID:  charSsidUUID,
 		Flags: bluetooth.CharacteristicWritePermission,
@@ -179,23 +158,40 @@ func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string, 
 		},
 	}
 
-	// Instantiate a read-only characteristic for broadcasting nearby, available WiFi networks.
-	networks := make([]*availableWiFiNetwork, len(awns))
-	for i, awn := range awns {
-		networks[i] = &awn
-	}
-	availableWiFiNetworks := &availableWiFiNetworks{
-		Networks: networks,
-	}
-	availableWiFiNetworksBytes, err := availableWiFiNetworks.ToBytes()
-	if err != nil {
-		return nil, errors.WithMessage(err, "unable to marshal available networks into bytes")
-	}
+	// Create a read-only characteristic for broadcasting nearby, available WiFi networks.
 	charConfigAvailableWiFiNetworks := bluetooth.CharacteristicConfig{
-		UUID:  charAvailableWiFiNetworksUUID,
-		Flags: bluetooth.CharacteristicReadPermission,
-		Value: availableWiFiNetworksBytes, // Fill this in with available WiFi networks.
+		UUID:       charAvailableWiFiNetworksUUID,
+		Flags:      bluetooth.CharacteristicReadPermission,
+		Value:      nil, // This will get filled in via calls to UpdateAvailableWiFiNetworks.
+		WriteEvent: nil, // This characteristic is read-only.
 	}
+
+	// Channel will be written to by interface method UpdateAvailableWiFiNetworks and will be read by
+	// the following background goroutine
+	availableWiFiNetworksChannel := make(chan *AvailableWiFiNetworks, 1)
+
+	// Read only channel used to listen for updates to the availableWiFiNetworks.
+	var availableWiFiNetworksChannelReadOnly <-chan *AvailableWiFiNetworks = availableWiFiNetworksChannel
+	utils.ManagedGo(func() {
+		for {
+			if err := ctx.Err(); err != nil {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case awns := <-availableWiFiNetworksChannelReadOnly:
+				bs, err := awns.ToBytes()
+				if err != nil {
+					logger.Errorw("failed to cast available WiFi networks to bytes before writing to bluetooth characteristic")
+				}
+				charConfigAvailableWiFiNetworks.Value = bs
+				logger.Infow("successfully updated available WiFi networks on bluetooth characteristic")
+			default:
+				time.Sleep(time.Second)
+			}
+		}
+	}, nil)
 
 	// Create service which will advertise each of the above characteristics.
 	s := &bluetooth.Service{
@@ -234,11 +230,12 @@ func NewLinuxBLEPeripheral(_ context.Context, logger golog.Logger, name string, 
 		advActive: false,
 		UUID:      serviceUUID,
 
-		characteristicSsid:                  charSsid,
-		characteristicPsk:                   charPsk,
-		characteristicRobotPartKeyID:        charRobotPartKeyID,
-		characteristicRobotPartKey:          charRobotPartKey,
-		characteristicAvailableWiFiNetworks: charAvailableWiFiNetworks,
+		availableWiFiNetworksChannelWriteOnly: availableWiFiNetworksChannel,
+
+		characteristicSsid:           charSsid,
+		characteristicPsk:            charPsk,
+		characteristicRobotPartKeyID: charRobotPartKeyID,
+		characteristicRobotPartKey:   charRobotPartKey,
 	}, nil
 }
 
@@ -257,7 +254,9 @@ func (s *linuxBLEService) StartAdvertising(ctx context.Context) error {
 	}
 	utils.ManagedGo(func() {
 		if err := listenForPairing(s.logger); err != nil {
-			s.logger.Errorw("failed to listen for pairing requests and automatically connect", "err", err)
+			s.logger.Errorw(
+				"failed to listen for pairing request (will have to manually accept pairing request on device)",
+				"err", err)
 		}
 	}, nil)
 	s.advActive = true
@@ -283,6 +282,10 @@ func (s *linuxBLEService) StopAdvertising() error {
 	return nil
 }
 
+func (s *linuxBLEService) UpdateAvailableWiFiNetworks(awns *AvailableWiFiNetworks) {
+	s.availableWiFiNetworksChannelWriteOnly <- awns
+}
+
 type ErrBLECharNoValue struct {
 	missingValue string
 }
@@ -298,9 +301,6 @@ func newErrBLECharNoValue(missingValue string) error {
 }
 
 func (s *linuxBLEService) ReadSsid() (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.characteristicSsid == nil {
 		return "", errors.New("characteristic ssid is nil")
 	}
@@ -318,9 +318,6 @@ func (s *linuxBLEService) ReadSsid() (string, error) {
 }
 
 func (s *linuxBLEService) ReadPsk() (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.characteristicPsk == nil {
 		return "", errors.New("characteristic psk is nil")
 	}
@@ -338,9 +335,6 @@ func (s *linuxBLEService) ReadPsk() (string, error) {
 }
 
 func (s *linuxBLEService) ReadRobotPartKeyID() (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.characteristicRobotPartKeyID == nil {
 		return "", errors.New("characteristic robot part key ID is nil")
 	}
@@ -358,9 +352,6 @@ func (s *linuxBLEService) ReadRobotPartKeyID() (string, error) {
 }
 
 func (s *linuxBLEService) ReadRobotPartKey() (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.characteristicRobotPartKey == nil {
 		return "", errors.New("characteristic robot part key is nil")
 	}
