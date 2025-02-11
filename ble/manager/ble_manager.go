@@ -13,27 +13,40 @@ import (
 	bp "github.com/maxhorowitz/btprov/ble/peripheral"
 )
 
+// BluetoothWiFiProvisioner provides an interface for managing the bluetooth (bluetooth-low-energy) service as it pertains to WiFi setup.
+type BluetoothWiFiProvisioner interface {
+	Start(context.Context) error
+	Stop(context.Context) error
+	Update(context.Context, *bp.AvailableWiFiNetworks) error
+	WaitForCredentials(context.Context) (*credentials, error)
+}
+
 // BluetoothManager provides an interface for managing a BLE (bluetooth-low-energy) peripheral advertisement on Linux.
-type bluetoothManager struct {
+type bluetoothWiFiProvisioner struct {
 	blep bp.BLEPeripheral
 }
 
-func (bm *bluetoothManager) UpdateAvailableWiFiNetworks(ctx context.Context, awns *bp.AvailableWiFiNetworks) {
-	bm.blep.UpdateAvailableWiFiNetworks(awns)
-}
-
-// AcceptIncomingConnections begins advertising a bluetooth service that acccepts WiFi and Viam cloud config credentials.
-func (bm *bluetoothManager) AcceptIncomingConnections(ctx context.Context) error {
+// Start begins advertising a bluetooth service that acccepts WiFi and Viam cloud config credentials.
+func (bm *bluetoothWiFiProvisioner) Start(ctx context.Context) error {
 	return bm.blep.StartAdvertising(ctx)
 }
 
-// RejectIncomingConnections stops advertising a bluetooth service which (when enabled) accepts WiFi and Viam cloud config credentials.
-func (bm *bluetoothManager) RejectIncomingConnections(ctx context.Context) error {
+// Stop stops advertising a bluetooth service which (when enabled) accepts WiFi and Viam cloud config credentials.
+func (bm *bluetoothWiFiProvisioner) Stop(ctx context.Context) error {
 	return bm.blep.StopAdvertising()
 }
 
+// Update updates the list of networks that are advertised via bluetooth as available.
+func (bm *bluetoothWiFiProvisioner) Update(ctx context.Context, awns *bp.AvailableWiFiNetworks) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	bm.blep.UpdateAvailableWiFiNetworks(awns)
+	return nil
+}
+
 // WaitForCredentials returns credentials which represent the information required to provision a robot part and its WiFi.
-func (bm *bluetoothManager) WaitForCredentials(ctx context.Context) (*credentials, error) {
+func (bm *bluetoothWiFiProvisioner) WaitForCredentials(ctx context.Context) (*credentials, error) {
 	var ssid, psk, robotPartKeyID, robotPartKey string
 	var ssidErr, pskErr, robotPartKeyIDErr, robotPartKeyErr error
 
@@ -71,12 +84,12 @@ func (bm *bluetoothManager) WaitForCredentials(ctx context.Context) (*credential
 }
 
 // NewBluetoothWiFiProvisioner returns a service which accepts credentials over bluetooth to provision a robot and its WiFi connection.
-func NewBluetoothWiFiProvisioner(ctx context.Context, logger golog.Logger, name string) (*bluetoothManager, error) {
+func NewBluetoothWiFiProvisioner(ctx context.Context, logger golog.Logger, name string) (BluetoothWiFiProvisioner, error) {
 	blep, err := bp.NewLinuxBLEPeripheral(ctx, logger, name)
 	if err != nil {
 		return nil, errors.WithMessage(err, "failed to set up bluetooth-low-energy peripheral (Linux)")
 	}
-	return &bluetoothManager{blep: blep}, nil
+	return &bluetoothWiFiProvisioner{blep: blep}, nil
 }
 
 // credentials represents the minimum required information needed to provision a Viam Agent.

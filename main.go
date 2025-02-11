@@ -15,15 +15,15 @@ func main() {
 
 	// Spin up a BLE connection, wait for required credentials, and cleanly shut down when finished.
 	bLogger := golog.NewDebugLogger("BLE manager")
-	bluetoothManager, err := bm.NewBluetoothWiFiProvisioner(ctx, bLogger, "Max Horowitz Raspberry Pi 5")
+	bluetoothWiFiProvisioner, err := bm.NewBluetoothWiFiProvisioner(ctx, bLogger, "Max Horowitz Raspberry Pi 5")
 	if err != nil {
 		bLogger.Fatalw("failed to initialize bluetooth manager", "err", err)
 	}
-	if err := bluetoothManager.AcceptIncomingConnections(ctx); err != nil {
+	if err := bluetoothWiFiProvisioner.Start(ctx); err != nil {
 		bLogger.Fatalw("failed to accept incoming connections", "err", err)
 	}
 
-	// Show example call to "UpdateAvailableWiFiNetworks" which should update the read-only list of available
+	// Show example call to "Update" which should update the read-only list of available
 	// networks advertised by the bluetooth service.
 	networks := &bp.AvailableWiFiNetworks{
 		Networks: []*struct {
@@ -43,11 +43,13 @@ func main() {
 			},
 		},
 	}
-
-	// Show second example call to "UpdateAvailableWiFiNetworks" (read-only values will be distinct from above).
-	bluetoothManager.UpdateAvailableWiFiNetworks(ctx, networks)
+	if err := bluetoothWiFiProvisioner.Update(ctx, networks); err != nil {
+		bLogger.Fatalw("failed to update available WiFi networks", "err", err)
+	}
 	bLogger.Info("updated WiFi networks (first)")
 	time.Sleep(time.Second * 45)
+
+	// Show second example call to "Update" (read-only values will be distinct from above).
 	networks = &bp.AvailableWiFiNetworks{
 		Networks: []*struct {
 			Ssid        string  "json:\"ssid\""
@@ -56,24 +58,26 @@ func main() {
 		}{
 			{
 				Ssid:        "Max-Replaced-The-WiFi",
-				Strength:    0.75,
-				RequiresPsk: true,
+				Strength:    0.95,
+				RequiresPsk: false,
 			},
 			{
 				Ssid:        "Viam-5G",
-				Strength:    0.3,
+				Strength:    0.675,
 				RequiresPsk: true,
 			},
 		},
 	}
-	bluetoothManager.UpdateAvailableWiFiNetworks(ctx, networks)
+	if err := bluetoothWiFiProvisioner.Update(ctx, networks); err != nil {
+		bLogger.Fatalw("failed to update available WiFi networks", "err", err)
+	}
 	bLogger.Info("updated WiFi networks (second)")
 
-	credentials, err := bluetoothManager.WaitForCredentials(ctx)
+	credentials, err := bluetoothWiFiProvisioner.WaitForCredentials(ctx)
 	if err != nil {
 		bLogger.Fatalw("failed to wait for credentials", "err", err)
 	}
-	if err := bluetoothManager.RejectIncomingConnections(ctx); err != nil {
+	if err := bluetoothWiFiProvisioner.Stop(ctx); err != nil {
 		bLogger.Fatalw("failed to reject incoming connections", "err", err)
 	}
 
